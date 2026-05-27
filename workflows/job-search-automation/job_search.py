@@ -23,6 +23,11 @@ TRACKER = BASE / "Nick Application Tracker.xlsx"
 LOG_FILE = BASE / "job_search.log"
 SHEET   = "Job Opportunities"
 
+# ── API pricing (claude-sonnet-4-6) ───────────────────────────────────────────
+INPUT_PRICE_PER_MTOK  = 3.00   # $ per million input tokens
+OUTPUT_PRICE_PER_MTOK = 15.00  # $ per million output tokens
+WEB_SEARCH_PRICE      = 0.01   # $ per individual search use
+
 # ── Colors (matched exactly from existing sheet) ───────────────────────────────
 WHITE  = PatternFill(start_color="FFFFFFFF", end_color="FFFFFFFF", fill_type="solid")
 GREEN  = PatternFill(start_color="FFE8F5E9", end_color="FFE8F5E9", fill_type="solid")  # $150k+ alt rows
@@ -135,7 +140,7 @@ def extract_listings(text: str) -> list[dict]:
     raise ValueError(f"Could not parse any listings. Raw excerpt: {text[:500]}")
 
 
-def search_jobs(client: anthropic.Anthropic) -> list[dict]:
+def search_jobs(client: anthropic.Anthropic) -> tuple[list[dict], float]:
     for attempt in range(3):
         try:
             response = client.messages.create(
@@ -144,8 +149,23 @@ def search_jobs(client: anthropic.Anthropic) -> list[dict]:
                 tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 15}],
                 messages=[{"role": "user", "content": SEARCH_PROMPT}],
             )
+            # Calculate cost from token usage + web search count
+            search_uses = sum(
+                1 for b in response.content
+                if getattr(b, "type", "") == "tool_use" and getattr(b, "name", "") == "web_search"
+            )
+            cost = (
+                response.usage.input_tokens  / 1_000_000 * INPUT_PRICE_PER_MTOK
+                + response.usage.output_tokens / 1_000_000 * OUTPUT_PRICE_PER_MTOK
+                + search_uses * WEB_SEARCH_PRICE
+            )
+            log.info(
+                f"Tokens — input: {response.usage.input_tokens}, "
+                f"output: {response.usage.output_tokens}, "
+                f"web searches: {search_uses}, estimated cost: ${cost:.4f}"
+            )
             text = "".join(b.text for b in response.content if hasattr(b, "text"))
-            return extract_listings(text)
+            return extract_listings(text), cost
         except anthropic.RateLimitError as e:
             if attempt < 2:
                 wait = 60 * (attempt + 1)
@@ -214,7 +234,7 @@ def main() -> None:
     )
 
     try:
-        raw = search_jobs(client)
+        raw, api_cost = search_jobs(client)
         log.info(f"Claude returned {len(raw)} listings")
     except Exception as e:
         log.error(f"Search failed: {e}")
@@ -239,7 +259,7 @@ def main() -> None:
     log.info(f"── Done. {len(new_listings)} added, {dupes} duplicates skipped ──\n")
     notify(
         "Job Search Complete ✅",
-        f"{len(new_listings)} new roles added, {dupes} duplicates skipped"
+        f"{len(new_listings)} new roles added, {dupes} skipped | Cost: ~${api_cost:.4f}"
     )
 
 
