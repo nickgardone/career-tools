@@ -155,23 +155,6 @@ def search_jobs(client: anthropic.Anthropic) -> list[dict]:
                 raise
 
 
-def find_listing_date(client: anthropic.Anthropic, company: str, title: str) -> str:
-    """Search alternate sources to find a posting date for a listing that had none."""
-    prompt = (
-        f'Find the date this job was posted: "{title}" at {company}. '
-        'Search LinkedIn, Indeed, Glassdoor, and the company careers page. '
-        'Return ONLY a date in YYYY-MM-DD format, or "—" if you cannot find it. No other text.'
-    )
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=50,
-        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = "".join(b.text for b in response.content if hasattr(b, "text")).strip()
-    m = re.search(r"\d{4}-\d{2}-\d{2}", text)
-    return m.group() if m else "—"
-
 
 def row_fill(salary_status: str, row_num: int) -> PatternFill:
     # Rows alternate: even data-index (row 2, 4, 6…) → white; odd → colored
@@ -242,13 +225,6 @@ def main() -> None:
     for item in raw:
         if is_duplicate(item, existing_urls, existing_keys):
             continue
-        if item.get("listing_date", "—") == "—":
-            try:
-                item["listing_date"] = find_listing_date(
-                    client, item.get("company", ""), item.get("title", "")
-                )
-            except Exception as e:
-                log.warning(f"Date lookup failed for {item.get('company')}: {e}")
         new_listings.append(item)
 
     dupes = len(raw) - len(new_listings)
